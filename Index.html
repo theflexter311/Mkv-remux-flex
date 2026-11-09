@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local MKV to MP4 Remuxer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --accent: #38bdf8;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .container {
+      background: var(--card-bg);
+      padding: 2.5rem;
+      border-radius: 1rem;
+      max-width: 520px;
+      width: 90%;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      text-align: center;
+      border: 1px solid #334155;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 1.5rem;
+    }
+    p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+    .drop-zone {
+      border: 2px dashed #475569;
+      border-radius: 0.75rem;
+      padding: 2rem;
+      margin: 1.5rem 0;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .drop-zone:hover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.05);
+    }
+    input[type="file"] {
+      display: none;
+    }
+    button {
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 700;
+      border: none;
+      padding: 0.8rem 1.8rem;
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      cursor: pointer;
+      width: 100%;
+      transition: opacity 0.2s;
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 1.2rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      min-height: 1.2rem;
+      word-break: break-all;
+    }
+    .badge {
+      display: inline-block;
+      background: #0284c7;
+      color: #fff;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <span class="badge">100% Client-Side Engine</span>
+    <h1>MKV to MP4 Remuxer</h1>
+    <p>Zero server uploads. Your video is processed right on your Apple Silicon / Snapdragon device memory.</p>
+
+    <div class="drop-zone" id="dropZone">
+      <span id="fileName">Click or drag & drop MKV file here</span>
+      <input type="file" id="uploader" accept=".mkv,video/x-matroska">
+    </div>
+
+    <button id="remuxBtn" disabled>Remux to MP4</button>
+    <div id="status">Ready</div>
+  </div>
+
+  <!-- FFmpeg.wasm core scripts -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+  <script>
+    const { FFmpeg } = FFmpegWASM;
+    const uploader = document.getElementById('uploader');
+    const dropZone = document.getElementById('dropZone');
+    const remuxBtn = document.getElementById('remuxBtn');
+    const statusText = document.getElementById('status');
+    const fileName = document.getElementById('fileName');
+
+    let ffmpeg = null;
+    let selectedFile = null;
+
+    dropZone.addEventListener('click', () => uploader.click());
+
+    uploader.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--accent)';
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.style.borderColor = '#475569';
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = '#475569';
+      if (e.dataTransfer.files.length > 0) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    function handleFile(file) {
+      selectedFile = file;
+      fileName.innerText = `${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`;
+      remuxBtn.disabled = false;
+      statusText.innerText = 'Ready to remux.';
+    }
+
+    remuxBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      remuxBtn.disabled = true;
+
+      try {
+        if (!ffmpeg) {
+          statusText.innerText = 'Initializing WebAssembly engine...';
+          ffmpeg = new FFmpeg();
+          await ffmpeg.load({
+            coreURL: "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js",
+            wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm"
+          });
+        }
+
+        statusText.innerText = 'Mounting file into memory...';
+        const mountDir = '/fs';
+        try { await ffmpeg.createDir(mountDir); } catch(e) {}
+        await ffmpeg.mount('WORKERFS', { files: [selectedFile] }, mountDir);
+
+        const inputPath = `${mountDir}/${selectedFile.name}`;
+        const outputName = selectedFile.name.replace(/\.[^/.]+$/, "") + ".mp4";
+
+        statusText.innerText = 'Remuxing streams (Direct Stream Copy)...';
+        await ffmpeg.exec([
+          '-i', inputPath,
+          '-c', 'copy',
+          '-movflags', 'faststart',
+          outputName
+        ]);
+
+        // Clean up mounted folder
+        await ffmpeg.unmount(mountDir);
+        await ffmpeg.deleteDir(mountDir);
+
+        statusText.innerText = 'Generating MP4 download...';
+        const data = await ffmpeg.readFile(outputName);
+        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = outputName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        await ffmpeg.deleteFile(outputName);
+        URL.revokeObjectURL(url);
+
+        statusText.innerText = 'Complete! File saved to your downloads.';
+      } catch (err) {
+        console.error(err);
+        statusText.innerText = 'Error occurred during processing. Check browser console.';
+      } finally {
+        remuxBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
